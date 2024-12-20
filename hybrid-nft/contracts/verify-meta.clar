@@ -4,6 +4,12 @@
 (define-constant ERR_INVALID_SIGNATURE (err u102))
 (define-constant ERR_ALREADY_EXISTS (err u103))
 (define-constant ERR_INVALID_TOKEN (err u104))
+(define-constant ERR_INVALID_INPUT (err u105))
+
+;; Constants for validation
+(define-constant MIN_NAME_LENGTH u2)
+(define-constant SIGNATURE_LENGTH u65)
+(define-constant HASH_LENGTH u32)
 
 ;; Data Variables
 (define-data-var contract-owner principal tx-sender)
@@ -31,8 +37,27 @@
     }
 )
 
-;; Read-Only Functions
+;; Helper Functions
+(define-private (is-valid-signature (signature (buff 65)))
+    (is-eq (len signature) SIGNATURE_LENGTH)
+)
 
+(define-private (is-valid-hash (hash (buff 32)))
+    (is-eq (len hash) HASH_LENGTH)
+)
+
+(define-private (is-valid-name (name (string-utf8 64)))
+    (>= (len name) MIN_NAME_LENGTH)
+)
+
+(define-private (is-valid-token-id (token-id uint))
+    (and 
+        (> token-id u0)
+        (<= token-id (var-get last-token-id))
+    )
+)
+
+;; Read-Only Functions
 (define-read-only (get-metadata-verification (token-id uint))
     (map-get? metadata-verification { token-id: token-id })
 )
@@ -55,6 +80,8 @@
 (define-public (register-artist (artist-name (string-utf8 64)))
     (let
         ((caller tx-sender))
+        ;; Validate input
+        (asserts! (is-valid-name artist-name) ERR_INVALID_INPUT)
         (asserts! (is-none (map-get? artist-registry { artist: caller })) ERR_ALREADY_EXISTS)
         (ok (map-set artist-registry
             { artist: caller }
@@ -91,7 +118,9 @@
          (artist-data (unwrap! (map-get? artist-registry { artist: caller }) ERR_NOT_AUTHORIZED))
          (new-token-id (+ (var-get last-token-id) u1)))
         
-        ;; Assert artist is verified
+        ;; Validate inputs
+        (asserts! (is-valid-hash metadata-hash) ERR_INVALID_INPUT)
+        (asserts! (is-valid-signature verification-signature) ERR_INVALID_INPUT)
         (asserts! (get is-verified artist-data) ERR_NOT_AUTHORIZED)
         
         ;; Store metadata verification
@@ -123,9 +152,11 @@
         ((caller tx-sender)
          (metadata (unwrap! (map-get? metadata-verification { token-id: token-id }) ERR_NOT_FOUND)))
         
-        ;; Assert caller is the artist
+        ;; Validate inputs
+        (asserts! (is-valid-token-id token-id) ERR_INVALID_INPUT)
+        (asserts! (is-valid-hash new-hash) ERR_INVALID_INPUT)
+        (asserts! (is-valid-signature new-signature) ERR_INVALID_INPUT)
         (asserts! (is-eq caller (get artist metadata)) ERR_NOT_AUTHORIZED)
-        ;; Assert token is active
         (asserts! (get is-active metadata) ERR_INVALID_TOKEN)
         
         ;; Update metadata
@@ -143,19 +174,19 @@
     )
 )
 
-;; Deactivate artwork (in case of disputes or other issues)
+;; Deactivate artwork
 (define-public (deactivate-artwork (token-id uint))
     (let
         ((caller tx-sender)
          (metadata (unwrap! (map-get? metadata-verification { token-id: token-id }) ERR_NOT_FOUND)))
         
-        ;; Assert caller is contract owner or artist
+        ;; Validate input
+        (asserts! (is-valid-token-id token-id) ERR_INVALID_INPUT)
         (asserts! (or
             (is-contract-owner caller)
             (is-eq caller (get artist metadata))
         ) ERR_NOT_AUTHORIZED)
         
-        ;; Update metadata with deactivated status
         (ok (map-set metadata-verification
             { token-id: token-id }
             (merge metadata { is-active: false })
@@ -168,6 +199,7 @@
     (let
         ((caller tx-sender))
         (asserts! (is-contract-owner caller) ERR_NOT_AUTHORIZED)
+        (asserts! (not (is-eq new-owner caller)) ERR_INVALID_INPUT)
         (var-set contract-owner new-owner)
         (ok true)
     )
